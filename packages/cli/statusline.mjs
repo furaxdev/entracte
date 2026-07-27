@@ -85,6 +85,16 @@ const WORDMARK = [
 	[0xcd, 0x90, 0x61],
 ];
 
+// The badge steps through the brand colours, one per refresh. Interpolating the
+// ramp instead would only crawl — the status line redraws every 10s, so a smooth
+// gradient reads as "the colour never really changes". Snapping to whole stops
+// makes each redraw visibly different. ENTRACTE_BADGE_STATIC=1 pins it.
+const STEP_MS = 10_000; // matches the installer's statusLine refreshInterval
+const badgeFill = () => {
+	if (process.env.ENTRACTE_BADGE_STATIC) return WORDMARK[0];
+	return WORDMARK[Math.floor(Date.now() / STEP_MS) % WORDMARK.length];
+};
+
 // Visible width of "◆ entracte" — diamond + space + 8 letters.
 const MARK_COLS = 10;
 // One glanceable sentence. Wider terminals get more padding, not more copy.
@@ -219,12 +229,24 @@ function renderLine(text, clickUrl, label, badgeColor, textColor) {
 	// Content (motivation/news) is never a paid badge → a subtle tag.
 	const bg = hexRgb(badgeColor);
 	const fg = hexRgb(textColor);
-	// Rounded caps are drawn as FOREGROUND glyphs in the badge's own colour, so
-	// they blend into whatever background the terminal uses.
-	const capRgb = bg || "255;212;52";
-	const cap = (glyph) => (ROUND ? `\x1b[38;2;${capRgb}m${glyph}${reset}` : "");
+	// An advertiser's own colours always win — a paid badge must look like the
+	// brand that paid for it. Only the entracte default gets the drifting fill.
+	const fill = bg || badgeFill().join(";");
+	// Pick the text colour from the fill's luminance so a pale fill gets near
+	// black and a saturated one gets white, instead of a fixed pair that goes
+	// unreadable half the cycle.
+	const [fr, fg_, fb] = fill.split(";").map(Number);
+	const luma = (0.299 * fr + 0.587 * fg_ + 0.114 * fb) / 255;
+	const ink = fg
+		? `\x1b[38;2;${fg}m`
+		: luma > 0.6
+			? "\x1b[38;2;11;15;21m"
+			: "\x1b[38;2;255;255;255m";
+	// Caps are FOREGROUND glyphs in the fill colour, so they blend into whatever
+	// background the terminal uses.
+	const cap = (glyph) => (ROUND ? `\x1b[38;2;${fill}m${glyph}${reset}` : "");
 	const badge = sponsor
-		? `${cap(CAP_L)}${bg ? `\x1b[48;2;${bg}m` : badgeBg}${fg ? `\x1b[38;2;${fg}m` : badgeFg}${bold}${ROUND ? "" : " "}${tag}${ROUND ? "" : " "}${reset}${cap(CAP_R)}`
+		? `${cap(CAP_L)}\x1b[48;2;${fill}m${ink}${bold}${ROUND ? "" : " "}${tag}${ROUND ? "" : " "}${reset}${cap(CAP_R)}`
 		: `${dim}${tag}${reset}`;
 	// The wordmark rides along with paid badges only — content modes (motivation,
 	// news) aren't entracte inventory, so they stay unbranded.
