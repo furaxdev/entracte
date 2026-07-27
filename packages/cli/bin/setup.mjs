@@ -38,6 +38,14 @@ const DEST_CMD = join(CMD_DIR, "entracte.md");
 const DEST_MODE = join(CLAUDE, "entracte-mode.mjs");
 const SRC_MODE = join(HERE, "..", "entracte-mode.mjs");
 
+// ── subcommands ──────────────────────────────────────────────────────────
+// A subcommand runs INSTEAD of the installer. Flags keep working unchanged: a
+// bare `npx entracte` (or `--spinner`/`--uninstall`) has no bare argv[2].
+if (process.argv[2] === "login") {
+	await import(pathToFileURL(join(HERE, "..", "login.mjs")).href);
+	process.exit(0);
+}
+
 // Claude Code custom slash command → `/entracte <ads|quotes|news>`. It calls the
 // INSTALLED helper (not npx — npx is install-only), so the switch is instant.
 const ENTRACTE_COMMAND_MD = `---

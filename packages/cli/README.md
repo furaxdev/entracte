@@ -33,6 +33,16 @@ it with Claude's own verbs instead of replacing them). Uninstall anytime:
 npx entracte --uninstall
 ```
 
+## Earn
+
+Link this machine to your entracte account to earn AI credits from the sponsors
+shown on your surfaces. It prints a code, opens `entracte.ai/link`, and saves the
+machine token to `~/.config/entracte/credentials.json` once you confirm:
+
+```bash
+npx entracte login
+```
+
 ## What it does (and doesn't)
 
 - Calls the same surface-agnostic `/api/serve` as the web widget.

@@ -42,7 +42,7 @@ try {
 }
 if (!token) {
 	console.error(
-		"✗ This machine isn't linked to your entracte account yet.\n  Link it at https://entracte.ai/link, then retry.",
+		"✗ This machine isn't linked to your entracte account yet.\n  Run `npx entracte login`, then retry.",
 	);
 	process.exit(1);
 }

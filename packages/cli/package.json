@@ -9,6 +9,7 @@
 	},
 	"files": [
 		"bin/setup.mjs",
+		"login.mjs",
 		"statusline.mjs",
 		"spinner.mjs",
 		"entracte-mode.mjs",
