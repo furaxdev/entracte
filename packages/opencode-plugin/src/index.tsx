@@ -136,7 +136,10 @@ async function fetchAd(token?: string): Promise<Ad | null> {
 			method: "POST",
 			headers: authHeaders(token),
 			body: JSON.stringify({
-				publisher: "entracte",
+				// A linked machine must serve for ITS OWN publisher, otherwise every
+				// impression is credited to the house account and signing in — which
+				// this plugin implements in full — earns the developer nothing.
+				publisher: readCreds()?.publisher || "entracte",
 				adType: "entracte-text",
 				surface: "opencode",
 				installId: installId() ?? undefined,

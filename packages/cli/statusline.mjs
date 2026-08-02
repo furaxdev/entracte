@@ -48,7 +48,24 @@ const API = (process.env.ENTRACTE_API || "https://api.entracte.ai").replace(
 	/\/$/,
 	"",
 );
-const PUBLISHER = process.env.ENTRACTE_PUBLISHER || "entracte";
+/**
+ * Which publisher earns from this surface. `npx entracte login` records the
+ * linked account's slug in credentials.json — without reading it, every
+ * impression is credited to the house account and linking earns nothing.
+ */
+function publisher() {
+	if (process.env.ENTRACTE_PUBLISHER) return process.env.ENTRACTE_PUBLISHER;
+	try {
+		const creds = join(
+			process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
+			"entracte",
+			"credentials.json",
+		);
+		return JSON.parse(readFileSync(creds, "utf8")).publisher || "entracte";
+	} catch {
+		return "entracte";
+	}
+}
 const TMP = process.env.TMPDIR || "/tmp";
 const SELF_TTL_MS = 30_000; // fallback self-serve cache
 const CUR_TTL_MS = 120_000; // trust the shared sponsor-pool cache this long
@@ -205,7 +222,7 @@ async function main() {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
-				publisher: PUBLISHER,
+				publisher: publisher(),
 				adType: "entracte-text",
 				keywords: keywordsFor(cwd),
 				installId: installId() ?? undefined,

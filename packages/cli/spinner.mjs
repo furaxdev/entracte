@@ -52,7 +52,11 @@ const API = (process.env.ENTRACTE_API || "https://api.entracte.ai").replace(
 	/\/$/,
 	"",
 );
-const PUBLISHER = process.env.ENTRACTE_PUBLISHER || "entracte";
+// Resolved lazily: CREDS is defined below, and a linked machine should serve
+// for ITS OWN publisher — otherwise every impression is credited to the house
+// account and linking earns the developer nothing.
+const publisher = () =>
+	process.env.ENTRACTE_PUBLISHER || machinePublisher() || "entracte";
 const HOME = homedir();
 const SETTINGS = join(HOME, ".claude", "settings.json");
 const CONFIG_HOME = process.env.XDG_CONFIG_HOME || join(HOME, ".config");
@@ -85,6 +89,15 @@ export const curCachePath = (sid) =>
 	join(TMP, `entracte-cur-${String(sid || "x").replace(/[^\w-]/g, "")}.json`);
 const ttlCachePath = (sid) =>
 	join(TMP, `entracte-spin-${String(sid || "x").replace(/[^\w-]/g, "")}`);
+
+/** Publisher slug written by `npx entracte login`, or null when unlinked. */
+function machinePublisher() {
+	try {
+		return JSON.parse(readFileSync(CREDS, "utf8")).publisher || null;
+	} catch {
+		return null;
+	}
+}
 
 function machineToken() {
 	try {
@@ -164,7 +177,7 @@ export async function fetchPool({ cwd = "", token = null, n = 6 } = {}) {
 				...(token ? { Authorization: `Bearer ${token}` } : {}),
 			},
 			body: JSON.stringify({
-				publisher: PUBLISHER,
+				publisher: publisher(),
 				adType: "entracte-text",
 				surface: "terminal",
 				keywords: keywordsFor(cwd),
