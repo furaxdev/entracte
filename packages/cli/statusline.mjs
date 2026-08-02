@@ -11,14 +11,17 @@ import { spawn } from "node:child_process";
  */
 import { randomUUID } from "node:crypto";
 import {
+	closeSync,
 	existsSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { WriteStream } from "node:tty";
 
 // Anonymous per-machine install id (shared by the entracte terminal surfaces on
 // this machine) so the network can count active installs. First-party only,
@@ -75,8 +78,120 @@ const ACTIVE_MS = 300_000; // session counts as active if the transcript is rece
 const dim = "\x1b[2m";
 const reset = "\x1b[0m";
 const bold = "\x1b[1m";
-const badgeBg = "\x1b[48;5;99m"; // violet ≈ #875fff (entracte)
-const badgeFg = "\x1b[97m"; // bright white
+const badgeBg = "\x1b[48;2;255;212;52m"; // entracte yellow #ffd434
+const badgeFg = "\x1b[38;2;11;15;21m"; // near-black, as on the site
+
+// Rounded badge caps (Nerd Font half circles, U+E0B6 / U+E0B4). Terminals
+// without a Nerd Font show tofu, and a few leave a hairline seam where the cap
+// meets the coloured body — ENTRACTE_BADGE=square drops the caps entirely.
+const ROUND = process.env.ENTRACTE_BADGE !== "square";
+const CAP_L = "\uE0B6";
+const CAP_R = "\uE0B4";
+
+// The wordmark gradient, sampled off the entracte lockup: teal → blue → violet →
+// orange, one truecolor stop per letter of "entracte".
+const MARK_TEAL = "\x1b[38;2;25;186;160m";
+const WORDMARK = [
+	[0x28, 0xbb, 0xcb],
+	[0x38, 0xbc, 0xf6],
+	[0x4f, 0xb2, 0xf5],
+	[0x67, 0xa7, 0xf5],
+	[0x96, 0x92, 0xf6],
+	[0x9f, 0x7e, 0xb5],
+	[0xc6, 0x92, 0x98],
+	[0xcd, 0x90, 0x61],
+];
+
+// The badge steps through the brand colours, one per refresh. Interpolating the
+// ramp instead would only crawl — the status line redraws every 10s, so a smooth
+// gradient reads as "the colour never really changes". Snapping to whole stops
+// makes each redraw visibly different. ENTRACTE_BADGE_STATIC=1 pins it.
+const STEP_MS = 10_000; // matches the installer's statusLine refreshInterval
+const badgeFill = () => {
+	if (process.env.ENTRACTE_BADGE_STATIC) return WORDMARK[0];
+	return WORDMARK[Math.floor(Date.now() / STEP_MS) % WORDMARK.length];
+};
+
+// Visible width of "◆ entracte" — diamond + space + 8 letters.
+const MARK_COLS = 10;
+// One glanceable sentence. Wider terminals get more padding, not more copy.
+const MAX_COPY = 58;
+
+/** Trim to `n` columns, backing off to the last word boundary when there is one. */
+function ellipsize(s, n) {
+	const cut = s.slice(0, n - 1);
+	const sp = cut.lastIndexOf(" ");
+	return (sp > n * 0.6 ? cut.slice(0, sp) : cut).trimEnd();
+}
+
+/** Printable columns, ignoring SGR colour codes and OSC 8 hyperlink wrappers. */
+function visibleWidth(s) {
+	return [
+		...s.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, ""),
+	].length;
+}
+
+/**
+ * Terminal width, or null when it can't be known. Claude Code pipes our stdout,
+ * so `process.stdout.columns` is undefined and COLUMNS usually isn't exported —
+ * ENTRACTE_COLS lets people pin it when they want a flush-right wordmark.
+ */
+function termCols() {
+	const pinned = Number.parseInt(process.env.ENTRACTE_COLS || "", 10);
+	const inherited = Number.parseInt(process.env.COLUMNS || "", 10);
+	// Claude Code renders the status line inside its own chrome and clips the tail,
+	// so filling the terminal edge-to-edge loses the last few cells — and the
+	// wordmark sits exactly there. Hold back a margin (tune with ENTRACTE_MARGIN).
+	const margin = Number.parseInt(process.env.ENTRACTE_MARGIN || "", 10);
+	// Erring large is cheap (a little gap at the right edge); erring small clips
+	// the wordmark, which is the whole point of aligning it there.
+	const keep = (c) =>
+		c ? Math.max(20, c - (Number.isFinite(margin) ? margin : 4)) : null;
+	// ENTRACTE_COLS is a deliberate override, so it's honoured verbatim. COLUMNS is
+	// just the terminal's own width — Claude Code indents the status line inside
+	// it, so that one still needs the margin or the tail gets clipped.
+	if (Number.isFinite(pinned) && pinned > 20) return pinned;
+
+	// Ask the controlling terminal FIRST: COLUMNS is captured when the shell
+	// starts and goes stale the moment the window is resized, whereas /dev/tty
+	// reports the live size. Fails harmlessly (ENXIO) when there's no tty.
+	let fd = null;
+	try {
+		fd = openSync("/dev/tty", "r+");
+		const cols = new WriteStream(fd).columns;
+		if (cols > 20) return keep(cols);
+	} catch {
+		/* fall through to the inherited hints below */
+	} finally {
+		if (fd !== null) {
+			try {
+				closeSync(fd);
+			} catch {
+				/* ignore */
+			}
+		}
+	}
+
+	if (process.stdout.columns) return keep(process.stdout.columns);
+	if (Number.isFinite(inherited) && inherited > 20) return keep(inherited);
+	return null;
+}
+
+/** Wrap a rendered line in an OSC 8 hyperlink. */
+function link(inner, url) {
+	return `\x1b]8;;${url}\x1b\\${inner}\x1b]8;;\x1b\\`;
+}
+
+/** "◆ entracte" — teal diamond + the gradient wordmark. */
+function brandMark() {
+	const word = [..."entracte"]
+		.map((ch, i) => {
+			const [r, g, b] = WORDMARK[i] ?? WORDMARK[WORDMARK.length - 1];
+			return `\x1b[38;2;${r};${g};${b}m${ch}`;
+		})
+		.join("");
+	return `${MARK_TEAL}◆${reset} ${bold}${word}${reset}`;
+}
 
 /**
  * Finding H4 (defense-in-depth): the server strips control chars, but a
@@ -131,13 +246,52 @@ function renderLine(text, clickUrl, label, badgeColor, textColor) {
 	// Content (motivation/news) is never a paid badge → a subtle tag.
 	const bg = hexRgb(badgeColor);
 	const fg = hexRgb(textColor);
+	// An advertiser's own colours always win — a paid badge must look like the
+	// brand that paid for it. Only the entracte default gets the drifting fill.
+	const fill = bg || badgeFill().join(";");
+	// Pick the text colour from the fill's luminance so a pale fill gets near
+	// black and a saturated one gets white, instead of a fixed pair that goes
+	// unreadable half the cycle.
+	const [fr, fg_, fb] = fill.split(";").map(Number);
+	const luma = (0.299 * fr + 0.587 * fg_ + 0.114 * fb) / 255;
+	const ink = fg
+		? `\x1b[38;2;${fg}m`
+		: luma > 0.6
+			? "\x1b[38;2;11;15;21m"
+			: "\x1b[38;2;255;255;255m";
+	// Caps are FOREGROUND glyphs in the fill colour, so they blend into whatever
+	// background the terminal uses.
+	const cap = (glyph) => (ROUND ? `\x1b[38;2;${fill}m${glyph}${reset}` : "");
 	const badge = sponsor
-		? `${bg ? `\x1b[48;2;${bg}m` : badgeBg}${fg ? `\x1b[38;2;${fg}m` : badgeFg}${bold} ${tag} ${reset}`
+		? `${cap(CAP_L)}\x1b[48;2;${fill}m${ink}${bold}${ROUND ? "" : " "}${tag}${ROUND ? "" : " "}${reset}${cap(CAP_R)}`
 		: `${dim}${tag}${reset}`;
-	const inner = url
-		? `${badge} ${bold}${t}${reset} ${dim}↗${reset}`
-		: `${badge} ${bold}${t}${reset}`;
-	return url ? `\x1b]8;;${url}\x1b\\${inner}\x1b]8;;\x1b\\` : inner;
+	// The wordmark rides along with paid badges only — content modes (motivation,
+	// news) aren't entracte inventory, so they stay unbranded.
+	const mkBody = (copy) =>
+		url
+			? `${badge} ${bold}${copy}${reset} ${dim}↗${reset}`
+			: `${badge} ${bold}${copy}${reset}`;
+	if (!sponsor) return url ? link(mkBody(t), url) : mkBody(t);
+
+	// Wordmark sits at the END of the line, as on the entracte lockup. When the
+	// width is known we reserve its columns FIRST and shorten the advertiser copy
+	// to fit — otherwise the terminal clips the line and eats the mark itself.
+	const cols = termCols();
+	// A status line is a glance, not a paragraph: the copy stays capped at one
+	// short sentence however wide the terminal is. Extra width becomes padding
+	// that pushes the wordmark right — it never becomes more advertiser text.
+	const fits = cols
+		? cols - visibleWidth(mkBody("")) - MARK_COLS - 1
+		: MAX_COPY - MARK_COLS;
+	const room = Math.min(fits, MAX_COPY);
+	let copy = t;
+	if (room > 1 && copy.length > room) copy = `${ellipsize(copy, room)}…`;
+	const body = mkBody(copy);
+	const used = visibleWidth(body) + MARK_COLS;
+	const pad = cols && cols > used ? " ".repeat(cols - used) : " ";
+	// Only the sponsor copy is clickable — the entracte mark stays outside the
+	// advertiser's hyperlink.
+	return `${url ? link(body, url) : body}${pad}${brandMark()}`;
 }
 
 /** Fire the view beacon once per new sponsor, only while the session is active. */
@@ -239,7 +393,9 @@ async function main() {
 	const c = decision.creative;
 	if (!decision.filled || !c) return;
 	let text = `${(c.headline || "").trim()} ${(c.body || "").trim()}`.trim();
-	if (text.length > 58) text = `${text.slice(0, 57)}…`;
+	// Hard cap only — renderLine does the real fitting, since it's the one that
+	// knows the badge width, the wordmark and the terminal size.
+	if (text.length > 160) text = `${text.slice(0, 159)}…`;
 	const line = renderLine(
 		text,
 		decision.clickUrl,
